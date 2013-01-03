@@ -15,3 +15,5 @@ the entire PCB!
 There is an IRED on the controller PCB for future options (like controlling an airconditioning unit).
 
 The 7-segment display shows status and errors. More about that later...
+
+Later!
