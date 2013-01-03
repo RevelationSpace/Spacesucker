@@ -1,5 +1,5 @@
 /*
-  Benadski's fancontroller 	
+	Benadski's fancontroller 	
 	Resonator = 16.00 MHz
 */
 
@@ -30,10 +30,20 @@
 #define		ss_all	0b11111111
 #define		fan		OCR2B
 
+#define		AUTO	0
+#define		MANUAL	1
+#define		SETUP	100
+#define		HELP	255
+
 
 //Global variables
-volatile unsigned char temp, pnt_7, dat_7;
+volatile unsigned char pnt_7, dat_7;
+volatile unsigned char mode, send_buf[40];
+volatile unsigned char temp, temp2;
+volatile unsigned char pot_man, pot_set;
+
 volatile unsigned int clk_slo, clk_med;
+volatile unsigned int temp16;
 
 
 //Used for relatively fast process control (7-segment display), increases at 37.7kHz
@@ -57,10 +67,32 @@ ISR(TIMER1_COMPA_vect)
 	clk_slo++;
 }
 
-//
+//Check incoming data, change mode
 ISR(USART_RX_vect)
 {
-	
+	unsigned char data;
+	data = UDR0;
+	if (data == 'h')
+		mode = HELP;
+}
+
+// Read out data, switch to the next channel and start conversion.
+ISR(ADC_vect)
+{
+	unsigned char data;
+	data = ADCH;			//Store data from ADC
+	if ((ADMUX % 8) == 0)	//Check if channel 0 was read
+	{
+		pot_man = data;
+		ADMUX++;			//Dirty way to select next channel...
+	}
+		
+	if ((ADMUX % 8) == 1)	//See ^
+	{
+		pot_set = data;
+		ADMUX &= 0b11111000;//Correct way to select ADC0 channel...
+	}
+	ADCSRA |= (1<<ADSC);	//Start ADC conversion	
 }
 
 //Software bug found, take action!
@@ -118,14 +150,25 @@ void io_init(void)
 	UCSR0B = 0b10011000;	//Enable RX and TX, enable RX interrupt
 	UCSR0C = 0b00000110;	//8-bit yeah!
 	
+	ADMUX  = 0b01100000;	//Use Vcc as reference, left adjusted result (8-bit) and channel 0
+	ADCSRA = 0b10101111;	//Enable ADC with interrupt, clock at 125kHz
+	ADCSRB = 0b00000000;	//ZZzzz...
+	DIDR0  = 0b00000011;	//Disable digital function of PC0 and PC1 to save a little bit of power
+	ADCSRA |= (1<<ADSC);	//Start ADC conversion
+	
 	sei();
 }
 
 int main(void)
 {
-	io_init();
-	OCR2B = 255;
-	dat_7 = ss_all;
+	io_init();			//Initialise everything
+	fan = 0;			//Fan at full speed at startup.
+	dat_7 = ss_all;		//Light all the segments of the display.
+	
+	temp16 = clk_slo + 20;		//Set interval to 19..20 * 100ms
+	while (temp16 != clk_slo);	//Wait...
+	
+	dat_7 = 0;
 	
 	while(1)
 	{
