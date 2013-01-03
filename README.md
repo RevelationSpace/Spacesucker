@@ -1,7 +1,7 @@
 Spacesucker
 ===========
 
-Fresh air controller
+Fresh air controller (code not functional yet).
 
 
 Reads out two out of three states of a CO2 measuring device. The states are: "high, but acceptable" and "just too high".
