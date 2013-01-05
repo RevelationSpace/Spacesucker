@@ -1,5 +1,5 @@
 /*
-	Benadski's fancontroller 	
+	RevSpace fancontroller (built by benadski)
 	Resonator = 16.00 MHz
 */
 
@@ -32,12 +32,14 @@
 #define		AUTO	0
 #define		MANUAL	1
 #define		SETUP	100
+#define		MIN_S	110
+#define		STU_S	120
 #define		HELP	255
 
 
 //Global variables
 volatile unsigned char pnt_7, dat_7;
-volatile unsigned char mode, send_buf[40];
+volatile unsigned char mode, rec_dat, dat_ava, send_buf[32]; //mode of operation, receive data, data available, send buffer
 volatile unsigned char temp, temp2;
 volatile unsigned char pot_man, pot_set;
 volatile unsigned char Min_Spd, Stu_Spd, Stu_Dur;	//Minimum run speed and startup speed and time (* 100ms) of fan. EEPROM
@@ -69,13 +71,28 @@ ISR(TIMER1_COMPA_vect)
 	clk_slo++;
 }
 
-//Check incoming data, change mode
+//Check incoming data, change mode.
 ISR(USART_RX_vect)
 {
 	unsigned char data;
 	data = UDR0;
-	if (data == 'h')
+	if (data == 'a')	//Auto mode
+		mode = AUTO;
+	if (data == 'm')	//Manual mode, next character is raw data (one byte; 0-255)
+		mode = MANUAL;
+	if (data == 's')	//Setup mode. Wait for next command
+		mode = SETUP;
+	if (data == 'h')	//Help mode, send back a little help text.
 		mode = HELP;
+	if ((mode == SETUP) && (data == '1'))	//Select first parameter (Minimum speed while running)
+		mode = MIN_S;
+	if ((mode == SETUP) && (data == '2'))	//Select second parameter (Minimum startup speed)
+		mode = STU_S;
+	if ((mode == MIN_S) || (mode == STU_S) || (mode == MANUAL))	//These modes actually change something.
+	{
+		rec_dat = data;		//Received data is "saved".
+		dat_ava++;			//Data available. If this becomes > 1, rec_dat is not reliable, send error in main.
+	}
 }
 
 // Read out data, switch to the next channel and start conversion.
@@ -166,7 +183,7 @@ void io_init(void)
 void chg_spd(unsigned char newspeed)
 {
 	unsigned char fan;
-	if ((fan < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is slow
+	if ((!(OCR2B) < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is slow
 	{
 		if (newspeed < Min_Spd)				//If desired speed is below running threshold
 			fan = 0;						//Stop fan.
@@ -179,7 +196,7 @@ void chg_spd(unsigned char newspeed)
 		}
 	} else fan = newspeed;					//New speed setting is higher than startup speed.
 	
-	OCR2B = !fan;							//Set the PWM (inverted)
+	OCR2B = !(fan);							//Set the PWM (inverted)
 }	
 	
 
