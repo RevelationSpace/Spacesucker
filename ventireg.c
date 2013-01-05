@@ -9,7 +9,7 @@
 #include <avr/pgmspace.h>
 
 //Definitions
-#define		BAUD_SET	103		//Baud rate 9600
+#define		BAUD_SET	103		//Equals 9600 baud.
 
 //Numbers, letters and special characters for 7-segment display
 #define		ss_a	0b01111101
@@ -196,6 +196,6 @@ int main(void)
 	
 	while(1)
 	{
-		chg_spd(100);
+		chg_spd(128);
 	}
 }
