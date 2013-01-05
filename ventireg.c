@@ -37,6 +37,9 @@
 #define		STU_D	130
 #define		HELP	255
 
+#define		MIN_S_ADD	0
+#define		STU_S_ADD	1
+#define		STU_D_ADD	2
 
 //Global variables
 volatile unsigned char dat_7;	//The 7-segment display data register
@@ -93,10 +96,12 @@ ISR(USART_RX_vect)
 	{ 
 		if (data == '1')	//Select first parameter (Minimum speed while running)
 			mode = MIN_S;
-		if (data == '2')	//Select second parameter (Minimum startup speed)
+		else if (data == '2')	//Select second parameter (Minimum startup speed)
 			mode = STU_S;
-		if (data == '3')	//Select second parameter (Minimum startup time)
+		else if (data == '3')	//Select second parameter (Minimum startup time)
 			mode = STU_D;
+		else					
+			mode = AUTO;		//Not the right character received, go back to auto mode
 	}
 }
 
@@ -182,15 +187,15 @@ void io_init(void)
 	
 	while ((EECR & (1<<EEPE)) > 0);	//Wait for EEPROM to be ready (just to be safe).
 
-	EEAR  = 0;
+	EEAR  = MIN_S_ADD;
 	EECR |= (1<<EERE);
 	Min_Spd = EEDR;			//Read minimum speed value from EEPROM
 
-	EEAR  = 1;
+	EEAR  = STU_S_ADD;
 	EECR |= (1<<EERE);		//Read minimum startup speed from EEPROM
 	Stu_Spd = EEDR;
 
-	EEAR  = 2;				//Read minimum startup duration from EEPROM
+	EEAR  = STU_D_ADD;		//Read minimum startup duration from EEPROM
 	EECR |= (1<<EERE);
 	Stu_Dur = EEDR;
 	
@@ -200,7 +205,7 @@ void io_init(void)
 void chg_spd(unsigned char newspeed)
 {
 	unsigned char fan;
-	if ((~(OCR2B) < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is slow
+	if ((~(OCR2B) < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is very slow
 	{
 		if (newspeed < Min_Spd)				//If desired speed is below running threshold
 			fan = 0;						//Stop fan.
@@ -216,20 +221,50 @@ void chg_spd(unsigned char newspeed)
 	OCR2B = ~(fan);							//Set the PWM (inverted)
 }	
 	
+void
+eeprom_wb_direct(uint16_t address, uint8_t data) //Direct byte write to EEPROM
+{
+	while (EECR & _BV(EEPE))	//Wait for previous write to complete
+		;
+	EEAR = address;
+	EEDR = data;
+	EECR |= _BV(EEMPE);		//EEPROM programming enable
+	EECR |= _BV(EEPE);		//Write!
+}
+
 
 int main(void)
 {
 	io_init();			//Initialise everything
-	OCR2B = 0;			//Fan at full speed!
+	chg_spd(255);		//Fan at full speed!
 	dat_7 = ss_all;		//Light all the segments of the display.
 	
 	temp16 = clk_slo + 20;		//Set interval to 19..20 * 100ms (about two seconds).
 	while (temp16 != clk_slo);	//Wait...
 	
 	dat_7 = 0;			//7-segment display off.
+	mode = AUTO;
 	
 	while(1)
 	{
-		chg_spd(128);
+		if (dat_ava == 1)
+		{
+			if (mode == MIN_S)
+				eeprom_wb_direct(MIN_S_ADD, rec_dat);
+			else if (mode == STU_S)
+				eeprom_wb_direct(STU_S_ADD, rec_dat);
+			else if (mode == STU_D)
+				eeprom_wb_direct(STU_D_ADD, rec_dat);
+			else if (mode == MANUAL)
+				chg_spd(rec_dat);
+			else
+				dat_ava++;
+			if (mode != MANUAL)
+				mode = AUTO;
+		}
+		
+		if (dat_ava > 1)
+		{
+		}
 	}
 }
