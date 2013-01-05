@@ -34,26 +34,25 @@
 #define		SETUP	100
 #define		MIN_S	110
 #define		STU_S	120
+#define		STU_D	130
 #define		HELP	255
 
 
 //Global variables
-volatile unsigned char pnt_7, dat_7;
+volatile unsigned char dat_7;	//The 7-segment display data register
 volatile unsigned char mode, rec_dat, dat_ava, send_buf[32]; //mode of operation, receive data, data available, send buffer
-volatile unsigned char temp, temp2;
-volatile unsigned char pot_man, pot_set;
+volatile unsigned char temp, temp2;	//Used for temporary data storage (do not use this within ISRs!)
+volatile unsigned char pot_man, pot_set; //Potentiometer data (from ADC)
 volatile unsigned char Min_Spd, Stu_Spd, Stu_Dur;	//Minimum run speed and startup speed and time (* 100ms) of fan. EEPROM
 
-volatile unsigned int clk_slo, clk_med;
-volatile unsigned int temp16;
-
-
+volatile unsigned int clk_slo, clk_med;	//Used for timing
+volatile unsigned int temp16;	//Temporary values of 16 bit length can be stored here (do not use within ISRs!)
 
 
 //Used for relatively fast process control (7-segment display), increases at 37.7kHz
 ISR(TIMER0_COMPA_vect)
 {
-	unsigned char tmp_i;
+	unsigned char tmp_i, pnt_7;
 	clk_med++;
 	
 	pnt_7 = (1 << (clk_med % 8)); 	//set a bit in the pnt_7 register.
@@ -76,22 +75,28 @@ ISR(USART_RX_vect)
 {
 	unsigned char data;
 	data = UDR0;
+	if ((mode == MIN_S) || (mode == STU_S) || (mode == STU_D) || (mode == MANUAL)) //Here "real" data is processed
+	{
+		rec_dat = data;		//Received data is "saved".
+		dat_ava++;			//Data available. If this becomes > 1, rec_dat is not reliable, send error in main.
+		return;				//Jump out of the ISR
+	}
 	if (data == 'a')	//Auto mode
 		mode = AUTO;
 	if (data == 'm')	//Manual mode, next character is raw data (one byte; 0-255)
 		mode = MANUAL;
 	if (data == 's')	//Setup mode. Wait for next command
 		mode = SETUP;
-	if (data == 'h')	//Help mode, send back a little help text.
+	if (data == 'h')	//Help mode, send back a little help text in main.
 		mode = HELP;
-	if ((mode == SETUP) && (data == '1'))	//Select first parameter (Minimum speed while running)
-		mode = MIN_S;
-	if ((mode == SETUP) && (data == '2'))	//Select second parameter (Minimum startup speed)
-		mode = STU_S;
-	if ((mode == MIN_S) || (mode == STU_S) || (mode == MANUAL))	//These modes actually change something.
-	{
-		rec_dat = data;		//Received data is "saved".
-		dat_ava++;			//Data available. If this becomes > 1, rec_dat is not reliable, send error in main.
+	if (mode == SETUP)
+	{ 
+		if (data == '1')	//Select first parameter (Minimum speed while running)
+			mode = MIN_S;
+		if (data == '2')	//Select second parameter (Minimum startup speed)
+			mode = STU_S;
+		if (data == '3')	//Select second parameter (Minimum startup time)
+			mode = STU_D;
 	}
 }
 
@@ -106,7 +111,7 @@ ISR(ADC_vect)
 		ADMUX++;			//Dirty way to select next channel...
 	}
 		
-	if ((ADMUX % 8) == 1)	//See ^
+	if ((ADMUX % 8) == 1)	//See ^^, but for channel 1
 	{
 		pot_set = data;
 		ADMUX &= 0b11111000;//Correct way to select ADC0 channel...
@@ -175,7 +180,19 @@ void io_init(void)
 	DIDR0  = 0b00000011;	//Disable digital function of PC0 and PC1 to save a little bit of power
 	ADCSRA |= (1<<ADSC);	//Start ADC conversion
 	
-	// DON'T FORGET TO READ EEPROM SETTINGS!
+	while ((EECR & (1<<EEPE)) > 0);	//Wait for EEPROM to be ready (just to be safe).
+
+	EEAR  = 0;
+	EECR |= (1<<EERE);
+	Min_Spd = EEDR;			//Read minimum speed value from EEPROM
+
+	EEAR  = 1;
+	EECR |= (1<<EERE);		//Read minimum startup speed from EEPROM
+	Stu_Spd = EEDR;
+
+	EEAR  = 2;				//Read minimum startup duration from EEPROM
+	EECR |= (1<<EERE);
+	Stu_Dur = EEDR;
 	
 	sei();
 }
@@ -183,7 +200,7 @@ void io_init(void)
 void chg_spd(unsigned char newspeed)
 {
 	unsigned char fan;
-	if ((!(OCR2B) < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is slow
+	if ((~(OCR2B) < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is slow
 	{
 		if (newspeed < Min_Spd)				//If desired speed is below running threshold
 			fan = 0;						//Stop fan.
@@ -196,7 +213,7 @@ void chg_spd(unsigned char newspeed)
 		}
 	} else fan = newspeed;					//New speed setting is higher than startup speed.
 	
-	OCR2B = !(fan);							//Set the PWM (inverted)
+	OCR2B = ~(fan);							//Set the PWM (inverted)
 }	
 	
 
