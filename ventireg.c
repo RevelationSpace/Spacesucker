@@ -28,7 +28,6 @@
 #define		ss_lo	0b00000100
 #define		ss_dp	0b10000000
 #define		ss_all	0b11111111
-#define		fan		OCR2B
 
 #define		AUTO	0
 #define		MANUAL	1
@@ -41,9 +40,12 @@ volatile unsigned char pnt_7, dat_7;
 volatile unsigned char mode, send_buf[40];
 volatile unsigned char temp, temp2;
 volatile unsigned char pot_man, pot_set;
+volatile unsigned char Min_Spd, Stu_Spd, Stu_Dur;	//Minimum run speed and startup speed and time (* 100ms) of fan. EEPROM
 
 volatile unsigned int clk_slo, clk_med;
 volatile unsigned int temp16;
+
+
 
 
 //Used for relatively fast process control (7-segment display), increases at 37.7kHz
@@ -99,7 +101,7 @@ ISR(ADC_vect)
 ISR(BADISR_vect)
 {
 	unsigned char error;
-	fan = 0;	//fan full speed to get attention and fresh air.
+	OCR2B = 0;	//fan full speed to get attention and fresh air.
     while(1)
 	{
 		error = (clk_slo % 32) / 2;
@@ -156,22 +158,44 @@ void io_init(void)
 	DIDR0  = 0b00000011;	//Disable digital function of PC0 and PC1 to save a little bit of power
 	ADCSRA |= (1<<ADSC);	//Start ADC conversion
 	
+	// DON'T FORGET TO READ EEPROM SETTINGS!
+	
 	sei();
 }
+
+void chg_spd(unsigned char newspeed)
+{
+	unsigned char fan;
+	if ((fan < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is slow
+	{
+		if (newspeed < Min_Spd)				//If desired speed is below running threshold
+			fan = 0;						//Stop fan.
+		else
+		{
+			fan = Stu_Spd;					//Set fan speed on startup speed
+			temp16 = clk_slo + Stu_Dur;		//Set interval to Stu_Dur * 100ms
+			while (temp16 != clk_slo);		//Wait for fan to start up.
+			fan = newspeed;					//Now a lower value is possible.
+		}
+	} else fan = newspeed;					//New speed setting is higher than startup speed.
+	
+	OCR2B = !fan;							//Set the PWM (inverted)
+}	
+	
 
 int main(void)
 {
 	io_init();			//Initialise everything
-	fan = 0;			//Fan at full speed at startup.
+	OCR2B = 0;			//Fan at full speed!
 	dat_7 = ss_all;		//Light all the segments of the display.
 	
-	temp16 = clk_slo + 20;		//Set interval to 19..20 * 100ms
+	temp16 = clk_slo + 20;		//Set interval to 19..20 * 100ms (about two seconds).
 	while (temp16 != clk_slo);	//Wait...
 	
-	dat_7 = 0;
+	dat_7 = 0;			//7-segment display off.
 	
 	while(1)
 	{
-
+		chg_spd(100);
 	}
 }
