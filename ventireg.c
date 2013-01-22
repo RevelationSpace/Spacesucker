@@ -1,6 +1,19 @@
 /*
 	RevSpace fancontroller (built by benadski)
 	Resonator = 16.00 MHz
+	
+	Inputs:	-CO2 above normal
+			-CO2 high
+			-Manual switch
+			-Space state
+			-Manual potentiometer
+			-Demoist timing potentiometer (onboard)
+			-Serial in (9600n1)
+			
+	Outputs:-Fan PWM
+			-LED display
+			-Serial out
+			-IRED (future options like aircondioner control)
 */
 
 #include <avr/io.h>
@@ -12,22 +25,19 @@
 #define		BAUD_SET	103		//Equals 9600 baud.
 
 //Numbers, letters and special characters for 7-segment display
-#define		ss_a	0b01111101
-#define		ss_c	0b00110110
-#define		ss_d	0b01001111
-#define		ss_e	0b01110110
-#define		ss_f	0b01110010
-#define		ss_l	0b00100110
-#define		ss_n	0b00111011
-#define		ss_o	0b00111111
-#define		ss_p	0b01111010
-#define		ss_r	0b01000010
-#define		ss_s	0b01110101
-#define		ss_hi	0b00010000
-#define		ss_me	0b01000000
-#define		ss_lo	0b00000100
-#define		ss_dp	0b10000000
-#define		ss_all	0b11111111
+#define		ss_a	0b01111011	// Auto
+#define		ss_c	0b00110110	// CO2 warning detected
+#define		ss_d	0b01001111	// Demoist (timed event when space is closed)
+#define		ss_e	0b01110110	// Error
+#define		ss_o	0b00111111	// CO2 critical
+#define		ss_p	0b01111010	// Programming EEPROM values mode
+#define		ss_r	0b01000010	// Used in bad interrupt routine
+#define		ss_s	0b01110101	// Starting up fan
+#define		ss_hi	0b00010000	// Manual, fan high
+#define		ss_me	0b01000000	// Manual, fan medium
+#define		ss_lo	0b00000100	// Manual, fan low
+#define		ss_dp	0b10000000	// Space closed
+#define		ss_all	0b11111111	// Test display
 
 #define		AUTO	0
 #define		MANUAL	1
@@ -42,7 +52,7 @@
 #define		STU_D_ADD	2
 
 //Global variables
-volatile unsigned char dat_7;	//The 7-segment display data register
+volatile unsigned char dat_7, disp1, disp2, disp3, dispt;	//The 7-segment display data registers
 volatile unsigned char mode, rec_dat, dat_ava, send_buf[32]; //mode of operation, receive data, data available, send buffer
 volatile unsigned char temp, temp2;	//Used for temporary data storage (do not use this within ISRs!)
 volatile unsigned char pot_man, pot_set; //Potentiometer data (from ADC)
@@ -232,12 +242,35 @@ eeprom_wb_direct(uint16_t address, uint8_t data) //Direct byte write to EEPROM
 	EECR |= _BV(EEPE);		//Write!
 }
 
+void
+display_upd(void)
+{
+	//Display routine, displays up to three characters, followed by blank.
+	dispt = (clk_slo % 16) / 4; //Update display timer
+	
+	if (disp2 == 0)		//If no data in disp2, copy from disp1
+		disp2 = disp1;
+	if (disp3 == 0)		//If no data in disp3, copy from disp2
+		disp3 = disp2;
+	
+	if (dispt == 0)		//If character 0 selected
+		dat_7 = 0;		//Clear display
+	if (dispt == 1)		
+		dat_7 = disp1;	//Display first 
+	if (dispt == 2)
+		dat_7 = disp2;	//Second
+	if (dispt == 3)
+		dat_7 = disp3;	//Last
+}
 
 int main(void)
 {
 	io_init();			//Initialise everything
 	chg_spd(255);		//Fan at full speed!
 	dat_7 = ss_all;		//Light all the segments of the display.
+	disp1 = ss_a;		//Display auto mode after startup
+	disp2 = 0;
+	disp3 = 0;
 	
 	temp16 = clk_slo + 20;		//Set interval to 19..20 * 100ms (about two seconds).
 	while (temp16 != clk_slo);	//Wait...
@@ -245,26 +278,43 @@ int main(void)
 	dat_7 = 0;			//7-segment display off.
 	mode = AUTO;
 	
+	
+	
 	while(1)
 	{
-		if (dat_ava == 1)
+		if (dat_ava == 1)	//Data available from UART
 		{
-			if (mode == MIN_S)
-				eeprom_wb_direct(MIN_S_ADD, rec_dat);
-			else if (mode == STU_S)
-				eeprom_wb_direct(STU_S_ADD, rec_dat);
-			else if (mode == STU_D)
-				eeprom_wb_direct(STU_D_ADD, rec_dat);
-			else if (mode == MANUAL)
-				chg_spd(rec_dat);
+			if (mode == MIN_S)		//If minimum speed EEPROM setting is to be adjusted
+				eeprom_wb_direct(MIN_S_ADD, rec_dat);	//Adjust it
+			else if (mode == STU_S)	//If startup speed EEPROM setting is to be adjusted
+				eeprom_wb_direct(STU_S_ADD, rec_dat);	//Adjust it
+			else if (mode == STU_D)	//If startup duration bla bla 
+				eeprom_wb_direct(STU_D_ADD, rec_dat);	//Bla
+			else if (mode == MANUAL) //If in manual mode
+				chg_spd(rec_dat);	//Adjust fan speed 
 			else
-				dat_ava++;
-			if (mode != MANUAL)
+				dat_ava++;	//Error, data received has no purpose (dat_ava > 1)
+				
+			if (mode != MANUAL) //All data should be processed now, return to running mode.
 				mode = AUTO;
 		}
 		
-		if (dat_ava > 1)
+		if (dat_ava > 1) //Too much data available means go back to auto mode
 		{
+			mode = AUTO;	//Go back to auto mode
+			dat_ava = 0;	//Discard data
 		}
+		
+		if (mode == MANUAL)
+		{
+			
+		}
+		
+		if (mode ==  AUTO)
+		{
+			
+		}
+		
+		display_upd();
 	}
 }
