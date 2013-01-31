@@ -56,7 +56,8 @@ volatile unsigned char dat_7, disp1, disp2, disp3, dispt;	//The 7-segment displa
 volatile unsigned char mode, rec_dat, dat_ava, send_buf[32]; //mode of operation, receive data, data available, send buffer
 volatile unsigned char temp, temp2;	//Used for temporary data storage (do not use this within ISRs!)
 volatile unsigned char pot_man, pot_set; //Potentiometer data (from ADC)
-volatile unsigned char Min_Spd, Stu_Spd, Stu_Dur;	//Minimum run speed and startup speed and time (* 100ms) of fan. EEPROM
+volatile unsigned char Min_Spd, Stu_Spd, Stu_Dur, fan;	//Minimum run speed and startup speed and time (* 100ms) of fan. EEPROM
+volatile unsigned char CO2, measured;	//CO2 data, 0 = low, 1-254 = warning, 255 = critical. measured = 1 if data processed.
 
 volatile unsigned int clk_slo, clk_med;	//Used for timing
 volatile unsigned int temp16;	//Temporary values of 16 bit length can be stored here (do not use within ISRs!)
@@ -99,7 +100,10 @@ ISR(USART_RX_vect)
 	if (data == 'm')	//Manual mode, next character is raw data (one byte; 0-255)
 		mode = MANUAL;
 	if (data == 's')	//Setup mode. Wait for next command
+	{
 		mode = SETUP;
+		disp1 = ss_p;
+	}
 	if (data == 'h')	//Help mode, send back a little help text in main.
 		mode = HELP;
 	if (mode == SETUP)
@@ -139,6 +143,7 @@ ISR(BADISR_vect)
 {
 	unsigned char error;
 	OCR2B = 0;	//fan full speed to get attention and fresh air.
+	disp3 = ss_e;	//Will not be displayed, maybe when some code is corrupt (no promises).
     while(1)
 	{
 		error = (clk_slo % 32) / 2;
@@ -214,7 +219,6 @@ void io_init(void)
 
 void chg_spd(unsigned char newspeed)
 {
-	unsigned char fan;
 	if ((~(OCR2B) < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is very slow
 	{
 		if (newspeed < Min_Spd)				//If desired speed is below running threshold
@@ -226,7 +230,9 @@ void chg_spd(unsigned char newspeed)
 			while (temp16 != clk_slo);		//Wait for fan to start up.
 			fan = newspeed;					//Now a lower value is possible.
 		}
-	} else fan = newspeed;					//New speed setting is higher than startup speed.
+	} else if (newspeed < Min_Spd)			//If new speed is lower than minimum, shut down fan.
+		fan = 0;
+	else fan = newspeed;					//New speed setting is higher than minimum speed, ok!
 	
 	OCR2B = ~(fan);							//Set the PWM (inverted)
 }	
@@ -254,7 +260,7 @@ display_upd(void)
 		disp3 = disp2;
 	
 	if (dispt == 0)		//If character 0 selected
-		dat_7 = 0;		//Clear display
+		dat_7 = ss_dp;	//Clear display except decimal point
 	if (dispt == 1)		
 		dat_7 = disp1;	//Display first 
 	if (dispt == 2)
@@ -282,39 +288,105 @@ int main(void)
 	
 	while(1)
 	{
-		if (dat_ava == 1)	//Data available from UART
+		//Process input data from CO2 measurement device once every 6 seconds or so.
+		if (((clk_slo % 64) == 0) && (measured == 0))
 		{
-			if (mode == MIN_S)		//If minimum speed EEPROM setting is to be adjusted
-				eeprom_wb_direct(MIN_S_ADD, rec_dat);	//Adjust it
-			else if (mode == STU_S)	//If startup speed EEPROM setting is to be adjusted
-				eeprom_wb_direct(STU_S_ADD, rec_dat);	//Adjust it
-			else if (mode == STU_D)	//If startup duration bla bla 
-				eeprom_wb_direct(STU_D_ADD, rec_dat);	//Bla
-			else if (mode == MANUAL) //If in manual mode
-				chg_spd(rec_dat);	//Adjust fan speed 
+			if (((PINC && (1<<PC3)) > 0) && (CO2 < 254))	//Check if (not max) warning level reached
+				CO2++;
+			if ((PINC && (1<<PC2)) > 0)					//Check if critical level is reached
+				CO2 = 255;
+			if (((PINC && ((1<<PC2)+(1<<PC3))) == 0)	&& (CO2 > 0))//If CO2 level normal, decrease CO2 setting
+				CO2--;
+			measured = 1;
+		}
+		
+		//Reset measurement timer
+		if ((clk_slo % 64) > 0)
+			measured = 0;
+			
+			
+		if ((PINC && (1<<PC4)) == 1) //If space is open 
+		{
+		
+			//If there is UART data available it is processed here
+			if (dat_ava == 1)	//Data available from UART
+			{
+				if (mode == MIN_S)			//If minimum speed EEPROM setting is to be adjusted
+					eeprom_wb_direct(MIN_S_ADD, rec_dat);	//Adjust it
+				else if (mode == STU_S)		//If startup speed EEPROM setting is to be adjusted
+					eeprom_wb_direct(STU_S_ADD, rec_dat);	//Adjust it
+				else if (mode == STU_D)		//If startup duration bla bla 
+					eeprom_wb_direct(STU_D_ADD, rec_dat);	//Bla
+				else if (mode == MANUAL) 	//If in manual mode
+				{	
+					if (rec_dat == 0)		//If received data equals zero, go back to auto mode.
+						mode = AUTO;
+					else				
+						chg_spd(rec_dat);	//Adjust fan speed 
+				}
+				else
+					dat_ava++;	//Error, data received has no purpose (dat_ava > 1)
+					
+				if (mode != MANUAL) //All data should be processed now, return to running mode.
+					mode = AUTO;
+			}
+			
+			//If data is not processed in time, the received data is useless.
+			if (dat_ava > 1) //Too much data available...
+			{
+				mode = AUTO;	//Go back to auto mode
+				dat_ava = 0;	//Discard data
+			}
+			
+			//If in manual mode, display fan speed and CO2 info if too high.
+			if (mode == MANUAL)
+			{
+				if (fan < 85)			//Fan slow or off
+					disp1 = ss_lo;
+				else if (fan < 170)		//Fan medium speed
+					disp1 = ss_me;
+				else					//Fan high speed
+					disp1 = ss_hi;		
+			}
+			
+			//In auto mode, set fan speed higher if CO2 level is above normal. 
+			if (mode ==  AUTO)
+			{
+				temp16 = Min_Spd + CO2;		//Add to check for overflow (>255)
+				if ((temp16 > 255) && (fan < 255))
+					chg_spd(255);			//More is max.
+				else if (!(fan == (temp16 % 256)))
+					chg_spd(temp16 % 256);	//Less is equal.
+					
+				//Display info
+				disp1 = ss_a;				//Show mode is auto
+			}
+
+			//Display CO2 info if high or critical
+			if ((PINC && (1<<PC2)) > 0)
+				disp2 = ss_o;
+			else if ((PINC && (1<<PC3)) > 0)
+				disp2 = ss_c;
 			else
-				dat_ava++;	//Error, data received has no purpose (dat_ava > 1)
-				
-			if (mode != MANUAL) //All data should be processed now, return to running mode.
-				mode = AUTO;
+				disp2 = 0;
 		}
 		
-		if (dat_ava > 1) //Too much data available means go back to auto mode
+		//Space is not open, run demoisture routine, works only when CO2 is not critical (fire!)...
+		//The demoisture time is set by the potentiometer on the PCB.
+		//Fan runs for (pot_set(8 bit) * 8 / 10) seconds every 3276.8 seconds (about 55 minutes)
+		else	
 		{
-			mode = AUTO;	//Go back to auto mode
-			dat_ava = 0;	//Discard data
+			disp1 = ss_dp;
+			disp2 = 0;
+			if (((clk_slo % 32768) < (pot_set * 8)) && (CO2 < 255))	//If time to demoist the space
+			{
+				if (!(fan == Stu_Spd))	//If fan not already running
+					chg_spd(Stu_Spd);	//Let it spin!
+				disp2 = ss_d;			//Show it on the screen
+			} else if (!(fan == 0)) chg_spd(0);	//Else shut down fan!
 		}
 		
-		if (mode == MANUAL)
-		{
-			
-		}
 		
-		if (mode ==  AUTO)
-		{
-			
-		}
-		
-		display_upd();
+		display_upd();	//Update display
 	}
 }
