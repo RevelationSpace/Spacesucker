@@ -26,10 +26,11 @@
 
 //Numbers, letters and special characters for 7-segment display
 #define		ss_a	0b01111011	// Auto
-#define		ss_c	0b00110110	// CO2 warning detected
+#define		ss_c	0b00110110	// CO2 critical
 #define		ss_d	0b01001111	// Demoist (timed event when space is closed)
 #define		ss_e	0b01110110	// Error
-#define		ss_o	0b00111111	// CO2 critical
+#define		ss_h	0b01101011	// CO2 high 
+#define		ss_o	0b00111111	// O
 #define		ss_p	0b01111010	// Programming EEPROM values mode
 #define		ss_r	0b01000010	// Used in bad interrupt routine
 #define		ss_s	0b01110101	// Starting up fan
@@ -225,7 +226,7 @@ void chg_spd(unsigned char newspeed)
 			fan = 0;						//Stop fan.
 		else
 		{
-			fan = Stu_Spd;					//Set fan speed on startup speed
+			OCR2B = ~(Stu_Spd);				//Set fan speed on startup speed
 			temp16 = clk_slo + Stu_Dur;		//Set interval to Stu_Dur * 100ms
 			while (temp16 != clk_slo);		//Wait for fan to start up.
 			fan = newspeed;					//Now a lower value is possible.
@@ -254,11 +255,11 @@ display_upd(void)
 	//Display routine, displays up to three characters, followed by blank.
 	dispt = (clk_slo % 16) / 4; //Update display timer
 	
-	if (disp2 == 0)		//If no data in disp2, copy from disp1
+	/*if (disp2 == 0)		//If no data in disp2, copy from disp1
 		disp2 = disp1;
 	if (disp3 == 0)		//If no data in disp3, copy from disp2
 		disp3 = disp2;
-	
+	*/
 	if (dispt == 0)		//If character 0 selected
 		dat_7 = ss_dp;	//Clear display except decimal point
 	if (dispt == 1)		
@@ -291,11 +292,11 @@ int main(void)
 		//Process input data from CO2 measurement device once every 6 seconds or so.
 		if (((clk_slo % 64) == 0) && (measured == 0))
 		{
-			if (((PINC && (1<<PC3)) > 0) && (CO2 < 254))	//Check if (not max) warning level reached
+			if (((PINC & (1<<PC3)) == 0) && (CO2 < 254))	//Check if (not max) warning level reached
 				CO2++;
-			if ((PINC && (1<<PC2)) > 0)					//Check if critical level is reached
+			if ((PINC & (1<<PC2)) == 0)					//Check if critical level is reached
 				CO2 = 255;
-			if (((PINC && ((1<<PC2)+(1<<PC3))) == 0)	&& (CO2 > 0))//If CO2 level normal, decrease CO2 setting
+			if (((PINC & ((1<<PC2)+(1<<PC3))) == ((1<<PC2)+(1<<PC3))) && (CO2 > 0))//If CO2 level normal, decrease CO2 setting
 				CO2--;
 			measured = 1;
 		}
@@ -305,7 +306,7 @@ int main(void)
 			measured = 0;
 			
 			
-		if ((PINC && (1<<PC4)) == 1) //If space is open 
+		if ((PINC & (1<<PC4)) > 0) //If space is open *** TESTING, > 0 should be == 0 when everything else works!
 		{
 		
 			//If there is UART data available it is processed here
@@ -331,7 +332,7 @@ int main(void)
 					mode = AUTO;
 			}
 			
-			//If data is not processed in time, the received data is useless.
+			//If data is not processed before next data received, all of the received data is useless.
 			if (dat_ava > 1) //Too much data available...
 			{
 				mode = AUTO;	//Go back to auto mode
@@ -349,8 +350,8 @@ int main(void)
 					disp1 = ss_hi;		
 			}
 			
-			//In auto mode, set fan speed higher if CO2 level is above normal. 
-			if (mode ==  AUTO)
+			//In auto mode, change fan speed to higher setting if CO2 level is above normal. 
+			if (mode == AUTO)
 			{
 				temp16 = Min_Spd + CO2;		//Add to check for overflow (>255)
 				if ((temp16 > 255) && (fan < 255))
@@ -363,10 +364,10 @@ int main(void)
 			}
 
 			//Display CO2 info if high or critical
-			if ((PINC && (1<<PC2)) > 0)
-				disp2 = ss_o;
-			else if ((PINC && (1<<PC3)) > 0)
+			if ((PINC & (1<<PC2)) == 0)
 				disp2 = ss_c;
+			else if ((PINC & (1<<PC3)) == 0)
+				disp2 = ss_h;
 			else
 				disp2 = 0;
 		}
@@ -383,7 +384,11 @@ int main(void)
 				if (!(fan == Stu_Spd))	//If fan not already running
 					chg_spd(Stu_Spd);	//Let it spin!
 				disp2 = ss_d;			//Show it on the screen
-			} else if (!(fan == 0)) chg_spd(0);	//Else shut down fan!
+			} else if (!(fan == 0)) 
+			{
+				chg_spd(0);	//Else shut down fan!
+				disp2 = 0;
+			}
 		}
 		
 		
