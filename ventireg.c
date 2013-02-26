@@ -226,7 +226,7 @@ void io_init(void)
 
 void chg_spd(unsigned char newspeed)
 {
-	if ((~(OCR2B) < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is very slow
+	if (((~OCR2B)&0xFF < Min_Spd) && (newspeed < Stu_Spd))	//If fan is not running and new speed is very slow
 	{
 		if (newspeed < Min_Spd)				//If desired speed is below running threshold
 			fan = 0;						//Stop fan.
