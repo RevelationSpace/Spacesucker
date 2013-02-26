@@ -30,7 +30,7 @@
 #define		ss_d	0b01001111	// Demoist (timed event when space is closed)
 #define		ss_e	0b01110110	// Error
 #define		ss_h	0b01101011	// CO2 high 
-#define		ss_o	0b00111111	// O
+#define		ss_o	0b00111111	// Override normal program, fan speed is controlled by external pot.
 #define		ss_p	0b01111010	// Programming EEPROM values mode
 #define		ss_r	0b01000010	// Used in bad interrupt routine
 #define		ss_s	0b01110101	// Starting up fan
@@ -73,10 +73,12 @@ ISR(TIMER0_COMPA_vect)
 	pnt_7 = (1 << (clk_med % 8)); 	//set a bit in the pnt_7 register.
 	pnt_7 &= dat_7;					//Clear the bit if digit is supposed to be off.
 	
-	tmp_i = pnt_7 & 0b00111111;		//If not for the PORTB register, clear it
-	PORTB = tmp_i;					//Write to port
-	tmp_i = pnt_7 & 0b11000000;		//IF not for the PORTD register, clear it!
-	PORTD = tmp_i;					//Write to port
+	tmp_i = pnt_7 & 0b00111111;		//If data not for the PORTB register, clear it
+	PORTB &= 0b11000000;			//Clear all data except the state of other pins.
+	PORTB |= tmp_i;					//Write data to port
+	tmp_i = pnt_7 & 0b11000000;		//If data not for the PORTD register, clear it!
+	PORTD &= 0b00111111;			//Clear all data except the state of other pins.
+	PORTD |= tmp_i;					//Write data to port
 }
 
 //Used for slow process control, increases ten times every second.
@@ -98,14 +100,14 @@ ISR(USART_RX_vect)
 	}
 	if (data == 'a')	//Auto mode
 		mode = AUTO;
-	if (data == 'm')	//Manual mode, next character is raw data (one byte; 0-255)
+	if (data == 'm')	//Manual mode, next character is raw data (one byte; 1-255, 0 is back to auto mode)
 		mode = MANUAL;
 	if (data == 's')	//Setup mode. Wait for next command
 	{
 		mode = SETUP;
 		disp1 = ss_p;
 	}
-	if (data == 'h')	//Help mode, send back a little help text in main.
+	if (data == 'h')	//Help mode, send back a little help text in main. (NOT IMPLEMENTED)
 		mode = HELP;
 	if (mode == SETUP)
 	{ 
@@ -206,14 +208,18 @@ void io_init(void)
 	EEAR  = MIN_S_ADD;
 	EECR |= (1<<EERE);
 	Min_Spd = EEDR;			//Read minimum speed value from EEPROM
+	if (Min_Spd == 255) Min_Spd = 20;
 
 	EEAR  = STU_S_ADD;
 	EECR |= (1<<EERE);		//Read minimum startup speed from EEPROM
 	Stu_Spd = EEDR;
+	if (Stu_Spd == 255) Stu_Spd = 128;
 
 	EEAR  = STU_D_ADD;		//Read minimum startup duration from EEPROM
 	EECR |= (1<<EERE);
 	Stu_Dur = EEDR;
+	if (Stu_Dur == 255) Stu_Dur = 128;
+	
 	
 	sei();
 }
@@ -227,6 +233,7 @@ void chg_spd(unsigned char newspeed)
 		else
 		{
 			OCR2B = ~(Stu_Spd);				//Set fan speed on startup speed
+			dat_7 = ss_s;					//Show "S" for startup on display
 			temp16 = clk_slo + Stu_Dur;		//Set interval to Stu_Dur * 100ms
 			while (temp16 != clk_slo);		//Wait for fan to start up.
 			fan = newspeed;					//Now a lower value is possible.
@@ -236,6 +243,7 @@ void chg_spd(unsigned char newspeed)
 	else fan = newspeed;					//New speed setting is higher than minimum speed, ok!
 	
 	OCR2B = ~(fan);							//Set the PWM (inverted)
+	//OCR2B = ~(newspeed);
 }	
 	
 void
@@ -306,63 +314,73 @@ int main(void)
 			measured = 0;
 			
 			
-		if ((PINC & (1<<PC4)) > 0) //If space is open *** TESTING, > 0 should be == 0 when everything else works!
+		if ((PINC & (1<<PC4)) == 0) //If space is open
 		{
-		
-			//If there is UART data available it is processed here
-			if (dat_ava == 1)	//Data available from UART
+			if ((PIND & (1<<PD2)) == 0) //If manual mode switch is active
 			{
-				if (mode == MIN_S)			//If minimum speed EEPROM setting is to be adjusted
-					eeprom_wb_direct(MIN_S_ADD, rec_dat);	//Adjust it
-				else if (mode == STU_S)		//If startup speed EEPROM setting is to be adjusted
-					eeprom_wb_direct(STU_S_ADD, rec_dat);	//Adjust it
-				else if (mode == STU_D)		//If startup duration bla bla 
-					eeprom_wb_direct(STU_D_ADD, rec_dat);	//Bla
-				else if (mode == MANUAL) 	//If in manual mode
-				{	
-					if (rec_dat == 0)		//If received data equals zero, go back to auto mode.
+				//Manual mode controlled by pot on PC1 ADC.
+				
+				disp1 = ss_o;
+				OCR2B = ~(pot_man);
+				
+			}
+			else
+			{
+				//If there is UART data available it is processed here
+				if (dat_ava == 1)	//Data available from UART
+				{
+					if (mode == MIN_S)			//If minimum speed EEPROM setting is to be adjusted
+						eeprom_wb_direct(MIN_S_ADD, rec_dat);	//Adjust it
+					else if (mode == STU_S)		//If startup speed EEPROM setting is to be adjusted
+						eeprom_wb_direct(STU_S_ADD, rec_dat);	//Adjust it
+					else if (mode == STU_D)		//If startup duration bla bla 
+						eeprom_wb_direct(STU_D_ADD, rec_dat);	//Bla
+					else if (mode == MANUAL) 	//If in manual mode
+					{	
+						if (rec_dat == 0)		//If received data equals zero, go back to auto mode.
+							mode = AUTO;
+						else				
+							chg_spd(rec_dat);	//Adjust fan speed 
+					}
+					else
+						dat_ava++;	//Error, data received has no purpose (dat_ava > 1)
+						
+					if (mode != MANUAL) //All data should be processed now, return to running mode.
 						mode = AUTO;
-					else				
-						chg_spd(rec_dat);	//Adjust fan speed 
 				}
-				else
-					dat_ava++;	//Error, data received has no purpose (dat_ava > 1)
-					
-				if (mode != MANUAL) //All data should be processed now, return to running mode.
-					mode = AUTO;
+				
+				//If data is not processed before next data received, all of the received data is useless.
+				if (dat_ava > 1) //Too much data available...
+				{
+					mode = AUTO;	//Go back to auto mode
+					dat_ava = 0;	//Discard data
+				}
+				
+				//In auto mode, change fan speed to higher setting if CO2 level is above normal. 
+				if (mode == AUTO)
+				{
+					temp16 = Min_Spd + CO2;		//Add to check for overflow (>255)
+					if ((temp16 > 255) && (fan < 255))
+						chg_spd(255);			//More is max.
+					else if ((temp16 < 256) && !(fan == (temp16 % 256)))
+						chg_spd(temp16 % 256);	//Less is equal.
+						
+					//Display info
+					disp1 = ss_a;				//Show mode is auto
+				}			
+				
+				//If in manual, UART controlled mode, display fan speed and CO2 info if too high.
+				if (mode == MANUAL)
+				{
+					if (fan < 85)			//Fan slow or off
+						disp1 = ss_lo;
+					else if (fan < 170)		//Fan medium speed
+						disp1 = ss_me;
+					else					//Fan high speed
+						disp1 = ss_hi;		
+				}
 			}
 			
-			//If data is not processed before next data received, all of the received data is useless.
-			if (dat_ava > 1) //Too much data available...
-			{
-				mode = AUTO;	//Go back to auto mode
-				dat_ava = 0;	//Discard data
-			}
-			
-			//If in manual mode, display fan speed and CO2 info if too high.
-			if (mode == MANUAL)
-			{
-				if (fan < 85)			//Fan slow or off
-					disp1 = ss_lo;
-				else if (fan < 170)		//Fan medium speed
-					disp1 = ss_me;
-				else					//Fan high speed
-					disp1 = ss_hi;		
-			}
-			
-			//In auto mode, change fan speed to higher setting if CO2 level is above normal. 
-			if (mode == AUTO)
-			{
-				temp16 = Min_Spd + CO2;		//Add to check for overflow (>255)
-				if ((temp16 > 255) && (fan < 255))
-					chg_spd(255);			//More is max.
-				else if (!(fan == (temp16 % 256)))
-					chg_spd(temp16 % 256);	//Less is equal.
-					
-				//Display info
-				disp1 = ss_a;				//Show mode is auto
-			}
-
 			//Display CO2 info if high or critical
 			if ((PINC & (1<<PC2)) == 0)
 				disp2 = ss_c;
@@ -385,10 +403,7 @@ int main(void)
 					chg_spd(Stu_Spd);	//Let it spin!
 				disp2 = ss_d;			//Show it on the screen
 			} else if (!(fan == 0)) 
-			{
 				chg_spd(0);	//Else shut down fan!
-				disp2 = 0;
-			}
 		}
 		
 		
