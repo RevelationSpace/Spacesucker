@@ -122,7 +122,7 @@ ISR(USART_RX_vect)
 	}
 }
 
-// Read out data, switch to the next channel and start conversion.
+//Read out data, switch to the next channel and start conversion.
 ISR(ADC_vect)
 {
 	unsigned char data;
@@ -130,16 +130,15 @@ ISR(ADC_vect)
 	if ((ADMUX % 8) == 0)	//Check if channel 0 was read
 	{
 		pot_man = data;
-		ADMUX++;			//Dirty way to select next channel...
-	}
-		
-	if ((ADMUX % 8) == 1)	//See ^^, but for channel 1
+		ADMUX=(ADMUX & 0xF8) | 1;	//Select channel 1
+	}else if ((ADMUX % 8) == 1)	//See ^^, but for channel 1
 	{
 		pot_set = data;
-		ADMUX &= 0b11111000;//Correct way to select ADC0 channel...
+		ADMUX=(ADMUX & 0xF8) | 0;	//Select channel 0 (Ok, the OR with 0 doesn't make sense)
 	}
 	ADCSRA |= (1<<ADSC);	//Start ADC conversion	
 }
+
 
 //Software bug found, take action!
 ISR(BADISR_vect)
@@ -322,6 +321,7 @@ int main(void)
 				
 				disp1 = ss_o;
 				OCR2B = ~(pot_man);
+				//chg_spd(pot_man);
 				
 			}
 			else
