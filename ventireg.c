@@ -52,6 +52,13 @@
 #define		STU_S_ADD	1
 #define		STU_D_ADD	2
 
+#define		warnCO2		1<<PC3
+#define		critCO2		1<<PC2
+
+#define		spaceOPEN	1<<PC4
+#define		manSWITCH	1<<PD2
+
+
 //Global variables
 volatile unsigned char dat_7, disp1, disp2, disp3, dispt;	//The 7-segment display data registers
 volatile unsigned char mode, rec_dat, dat_ava, send_buf[32]; //mode of operation, receive data, data available, send buffer
@@ -206,18 +213,18 @@ void io_init(void)
 
 	EEAR  = MIN_S_ADD;
 	EECR |= (1<<EERE);
-	Min_Spd = EEDR;			//Read minimum speed value from EEPROM
-	if (Min_Spd == 255) Min_Spd = 20;
+	Min_Spd = EEDR;						//Read minimum speed value from EEPROM
+	if (Min_Spd == 255) Min_Spd = 50;	//If EEPROM empty, set to something that's in the right direction
 
 	EEAR  = STU_S_ADD;
-	EECR |= (1<<EERE);		//Read minimum startup speed from EEPROM
-	Stu_Spd = EEDR;
-	if (Stu_Spd == 255) Stu_Spd = 128;
+	EECR |= (1<<EERE);					//Read minimum startup speed from EEPROM
+	Stu_Spd = EEDR;						
+	if (Stu_Spd == 255) Stu_Spd = 100;	//If EEPROM empty, set to something that's in the right direction
 
-	EEAR  = STU_D_ADD;		//Read minimum startup duration from EEPROM
+	EEAR  = STU_D_ADD;					//Read minimum startup duration from EEPROM
 	EECR |= (1<<EERE);
 	Stu_Dur = EEDR;
-	if (Stu_Dur == 255) Stu_Dur = 128;
+	if (Stu_Dur == 255) Stu_Dur = 30;	//If EEPROM empty, set to something that's in the right direction
 	
 	
 	sei();
@@ -280,30 +287,28 @@ display_upd(void)
 int main(void)
 {
 	io_init();			//Initialise everything
-	chg_spd(255);		//Fan at full speed!
+	chg_spd(Stu_Spd);	//Fan at startup speed.
 	dat_7 = ss_all;		//Light all the segments of the display.
 	disp1 = ss_a;		//Display auto mode after startup
 	disp2 = 0;
 	disp3 = 0;
 	
-	temp16 = clk_slo + 20;		//Set interval to 19..20 * 100ms (about two seconds).
-	while (temp16 != clk_slo);	//Wait...
+	temp16 = clk_slo + Stu_Dur;		//Set interval to startup duration (* 100ms).
+	while (temp16 != clk_slo);		//Wait...
 	
 	dat_7 = 0;			//7-segment display off.
 	mode = AUTO;
-	
-	
 	
 	while(1)
 	{
 		//Process input data from CO2 measurement device once every 6 seconds or so.
 		if (((clk_slo % 64) == 0) && (measured == 0))
 		{
-			if (((PINC & (1<<PC3)) == 0) && (CO2 < 254))	//Check if (not max) warning level reached
+			if (((PINC & (warnCO2)) == 0) && (CO2 < 254))	//Check if (not max) warning level reached
 				CO2++;
-			if ((PINC & (1<<PC2)) == 0)					//Check if critical level is reached
+			else if ((PINC & (critCO2)) == 0)					//Check if critical level is reached
 				CO2 = 255;
-			if (((PINC & ((1<<PC2)+(1<<PC3))) == ((1<<PC2)+(1<<PC3))) && (CO2 > 0))//If CO2 level normal, decrease CO2 setting
+			else if (((PINC & ((critCO2)+(warnCO2))) == ((critCO2)+(warnCO2))) && (CO2 > 0))//If CO2 level normal, decrease CO2 setting
 				CO2--;
 			measured = 1;
 		}
@@ -313,15 +318,14 @@ int main(void)
 			measured = 0;
 			
 			
-		if ((PINC & (1<<PC4)) == 0) //If space is open
+		if ((PINC & (spaceOPEN)) == 0) //If space is open
 		{
-			if ((PIND & (1<<PD2)) == 0) //If manual mode switch is active
+			if ((PIND & (manSWITCH)) == 0) //If manual mode switch is active
 			{
+				if (disp1 != ss_o)
 				//Manual mode controlled by pot on PC1 ADC.
-				
-				disp1 = ss_o;
-				OCR2B = ~(pot_man);
-				//chg_spd(pot_man);
+				disp1 = ss_o;		//Display [O]verride
+				chg_spd(pot_man);
 				
 			}
 			else
@@ -382,10 +386,10 @@ int main(void)
 			}
 			
 			//Display CO2 info if high or critical
-			if ((PINC & (1<<PC2)) == 0)
-				disp2 = ss_c;
-			else if ((PINC & (1<<PC3)) == 0)
+			if ((PINC & (warnCO2)) == 0)
 				disp2 = ss_h;
+			else if ((PINC & (critCO2)) == 0)
+				disp2 = ss_c;
 			else
 				disp2 = 0;
 		}
@@ -405,7 +409,6 @@ int main(void)
 			} else if (!(fan == 0)) 
 				chg_spd(0);	//Else shut down fan!
 		}
-		
 		
 		display_upd();	//Update display
 	}
