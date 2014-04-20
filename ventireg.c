@@ -38,6 +38,8 @@
 #define		ss_me	0b01000000	// Manual, fan medium
 #define		ss_lo	0b00000100	// Manual, fan low
 #define		ss_dp	0b10000000	// Space closed
+#define		ss_2s	0b00010100	// Wait for it...
+#define		ss_3s	0b01010100	// Get teh foul air out!
 #define		ss_all	0b11111111	// Test display
 
 #define		AUTO	0
@@ -66,6 +68,8 @@ volatile unsigned char temp, temp2;	//Used for temporary data storage (do not us
 volatile unsigned char pot_man, pot_set; //Potentiometer data (from ADC)
 volatile unsigned char Min_Spd, Stu_Spd, Stu_Dur, fan;	//Minimum run speed and startup speed and time (* 100ms) of fan. EEPROM
 volatile unsigned char CO2, measured;	//CO2 data, 0 = low, 1-254 = warning, 255 = critical. measured = 1 if data processed.
+
+volatile unsigned char SpaceState;	//For detecting the closure of the space. For removing the CO2 after the space has closed
 
 volatile unsigned int clk_slo, clk_med;	//Used for timing
 volatile unsigned int temp16;	//Temporary values of 16 bit length can be stored here (do not use within ISRs!)
@@ -320,6 +324,7 @@ int main(void)
 			
 		if ((PINC & (spaceOPEN)) == 0) //If space is open
 		{
+			SpaceState = 2;
 			if ((PIND & (manSWITCH)) == 0) //If manual mode switch is active
 			{
 				if (disp1 != ss_o)
@@ -400,14 +405,41 @@ int main(void)
 		else	
 		{
 			disp1 = ss_dp;
-			disp2 = 0;
-			if (((clk_slo % 32768) < (pot_set * 8)) && (CO2 < 255))	//If time to demoist the space
+				
+			if (SpaceState == 2)
 			{
-				if (!(fan == Stu_Spd))	//If fan not already running
-					chg_spd(Stu_Spd);	//Let it spin!
-				disp2 = ss_d;			//Show it on the screen
-			} else if (!(fan == 0)) 
-				chg_spd(0);	//Else shut down fan!
+				clk_slo = 0;			//Reset slow clock
+				SpaceState = 1;			//Skip this next time
+				disp2 = ss_2s;
+			}
+			
+			if (SpaceState == 1)
+			{
+				if (clk_slo >= 512)		//After about 50 seconds
+				{
+					chg_spd(255);		//Let it spin at max, share the funky nerd gasses with the world!
+					disp2 = ss_3s;		//Show it on the screen
+				}
+				if (clk_slo >= 18000)	//Aboot 30 minutes later...
+				{
+					chg_spd(0);			//Stop spinning, it should be freshlike now!
+					disp2 = 0;			
+					SpaceState = 0;
+				}
+			}
+
+			if (SpaceState == 0)
+			{
+				disp2 = 0;
+				if (((clk_slo % 32768) < (pot_set * 8)) && (CO2 < 255))	//If time to demoist the space
+				{
+					if (!(fan == Stu_Spd))	//If fan not already running
+						chg_spd(Stu_Spd);	//Let it spin!
+					disp2 = ss_d;			//Show it on the screen
+				} else if (!(fan == 0)) 
+					chg_spd(0);	//Else shut down fan!
+			}
+			
 		}
 		
 		display_upd();	//Update display
